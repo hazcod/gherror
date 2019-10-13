@@ -5,10 +5,54 @@ import (
 	"errors"
 	"fmt"
 	"github.com/google/go-github/v28/github"
-	"strconv"
 	"strings"
 	"time"
 )
+
+const (
+	MaxIssueComments = 20
+)
+
+func validGithubResponse(action string, err error, resp *github.Response) error {
+	if err != nil {
+		return errors.New(fmt.Sprintf("could not %s: %v", action, err))
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 399 {
+		return errors.New(fmt.Sprintf("%s returned status code %d", action, resp.StatusCode))
+	}
+
+	return nil
+}
+
+func shouldCreateComment(ctx context.Context, issue *github.Issue) (shouldCreate bool, err error) {
+	comments, resp, err := ghe.githubClient.Issues.ListComments(ctx, ghe.repoOwner, ghe.repoSlug, *issue.Number, &github.IssueListCommentsOptions{
+		Sort:        "",
+		Direction:   "",
+		Since:       time.Time{},
+		ListOptions: github.ListOptions{},
+	})
+
+	if err := validGithubResponse("shouldCreateComment", err, resp); err != nil {
+		return false, err
+	}
+
+	if len(comments) >= MaxIssueComments {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func createComment(ctx context.Context, issue *github.Issue, body string) (err error) {
+	_, resp, err := ghe.githubClient.Issues.CreateComment(ctx, ghe.repoOwner, ghe.repoSlug, *issue.Number, &github.IssueComment{Body: &body})
+
+	if err := validGithubResponse("createComment", err, resp); err != nil {
+		return err
+	}
+
+	return nil
+}
 
 func createGithubIssue(title string, body string, labels []string) error {
 	issueRequest := &github.IssueRequest{
@@ -21,13 +65,9 @@ func createGithubIssue(title string, body string, labels []string) error {
 		Assignees: nil,
 	}
 
-	_, response, err := ghe.githubClient.Issues.Create(context.Background(), ghe.repoOwner, ghe.repoSlug, issueRequest)
-	if err != nil {
-		return errors.New("could not create github issue: " + err.Error())
-	}
-
-	if response.StatusCode < 200 || response.StatusCode >= 399 {
-		return errors.New("github issue creation returned status code: " + strconv.Itoa(response.StatusCode))
+	_, resp, err := ghe.githubClient.Issues.Create(context.Background(), ghe.repoOwner, ghe.repoSlug, issueRequest)
+	if err := validGithubResponse("createIssue", err, resp); err != nil {
+		return err
 	}
 
 	return nil
@@ -49,10 +89,10 @@ func stringCompare(s1, s2 string) uint {
 	return uint(len(s1) - len(s2))
 }
 
-func hasComparableIssue(title string, minPercentage uint) (found bool, err error) {
+func hasComparableIssue(title string, minPercentage uint) (issue *github.Issue, err error) {
 	title = strings.TrimSpace(strings.ToLower(title))
 
-	issues, _, err := ghe.githubClient.Issues.ListByRepo(context.Background(), ghe.repoOwner, ghe.repoSlug, &github.IssueListByRepoOptions{
+	issues, resp, err := ghe.githubClient.Issues.ListByRepo(context.Background(), ghe.repoOwner, ghe.repoSlug, &github.IssueListByRepoOptions{
 		Milestone:   "",
 		State:       "",
 		Assignee:    "",
@@ -64,18 +104,20 @@ func hasComparableIssue(title string, minPercentage uint) (found bool, err error
 		Since:       time.Time{},
 		ListOptions: github.ListOptions{},
 	})
-	if err != nil {
-		return false, errors.New(fmt.Sprintf("could not list issues for %s/%s: %v", ghe.repoOwner, ghe.repoSlug, err))
+	if err := validGithubResponse("listIssues", err, resp); err != nil {
+		return nil, err
 	}
 
 	for _, issue := range issues {
 		otherTitle := strings.TrimSpace(strings.ToLower(*issue.Title))
 		difference := stringCompare(title, otherTitle) * 100 / uint(len(title))
 
+		//log.Printf("'%s' ?= '%s' -> difference %d", otherTitle, title, difference)
+
 		if (100 - difference) >= minPercentage {
-			return true, nil
+			return issue, nil
 		}
 	}
 
-	return false, nil
+	return nil, nil
 }

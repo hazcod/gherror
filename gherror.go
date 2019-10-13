@@ -61,20 +61,31 @@ func Report(codeError error, metadata map[string]string) error {
 		return nil
 	}
 
+	ctx := context.Background()
+
+	issueBody := fmt.Sprintf("%+v\n%+v", codeError, metadata)
+
 	title := codeError.Error()
-	found, err := hasComparableIssue(title, MinIssueTitleMatchPercentage)
+	comparableIssue, err := hasComparableIssue(title, MinIssueTitleMatchPercentage)
 	if err != nil {
 		return errors.New("could not find comparable issue: " + err.Error())
 	}
 
-	if found {
-		// TODO: comment about reoccurence with max of eg 30 comments
-		return nil
-	}
+	if comparableIssue != nil {
+		shouldCreate, err := shouldCreateComment(ctx, comparableIssue)
+		if err != nil {
+			return errors.New("could not check comments: " + err.Error())
+		}
 
-	issueBody := fmt.Sprintf("%+v\n%+v", codeError, metadata)
-	if err := createGithubIssue(codeError.Error(), issueBody, IssueLabels); err != nil {
-		return errors.New("could not create github issue: " + err.Error())
+		if shouldCreate {
+			if err := createComment(ctx, comparableIssue, issueBody); err != nil {
+				return errors.New("could not create comment: " + err.Error())
+			}
+		}
+	} else {
+		if err := createGithubIssue(codeError.Error(), issueBody, IssueLabels); err != nil {
+			return errors.New("could not create github issue: " + err.Error())
+		}
 	}
 
 	return nil
